@@ -1,0 +1,339 @@
+<?php
+
+namespace LaraGram\Listening;
+
+use LaraGram\Container\Container;
+use LaraGram\Listening\Contracts\ProvidesListenContext;
+use LaraGram\Listening\Exceptions\MethodNotAllowedException;
+use LaraGram\Listening\Exceptions\ResourceNotFoundException;
+use LaraGram\Request\Request;
+use LaraGram\Support\Collection;
+
+class CompiledListenCollection extends AbstractListenCollection
+{
+    /**
+     * The compiled listens collection.
+     *
+     * @var array
+     */
+    protected $compiled = [];
+
+    /**
+     * An array of the listen attributes keyed by name.
+     *
+     * @var array
+     */
+    protected $attributes = [];
+
+    /**
+     * The dynamically added listens that were added after loading the cached, compiled listens.
+     *
+     * @var \LaraGram\Listening\ListenCollection|null
+     */
+    protected $listens;
+
+    /**
+     * Memoized full ListenCollection rehydrated from the cached attributes.
+     *
+     * @var \LaraGram\Listening\ListenCollection|null
+     */
+    protected $rehydrated = null;
+
+    /**
+     * The listener instance used by the listen.
+     *
+     * @var \LaraGram\Listening\Listener
+     */
+    protected $listener;
+
+    /**
+     * The container instance used by the listen.
+     *
+     * @var \LaraGram\Container\Container
+     */
+    protected $container;
+
+    /**
+     * Create a new CompiledListenCollection instance.
+     *
+     * @param  array  $compiled
+     * @param  array  $attributes
+     * @return void
+     */
+    public function __construct(array $compiled, array $attributes)
+    {
+        $this->compiled = $compiled;
+        $this->attributes = $attributes;
+        $this->listens = new ListenCollection();
+    }
+
+    /**
+     * Add a Listen instance to the collection.
+     *
+     * @param  \LaraGram\Listening\Listen  $listen
+     * @return \LaraGram\Listening\Listen
+     */
+    public function add(Listen $listen)
+    {
+        // Invalidate the memoized rehydration so the new listen is matched.
+        $this->rehydrated = null;
+
+        return $this->listens->add($listen);
+    }
+
+    /**
+     * Refresh the name look-up table.
+     *
+     * This is done in case any names are fluently defined or if listens are overwritten.
+     *
+     * @return void
+     */
+    public function refreshNameLookups()
+    {
+        //
+    }
+
+    /**
+     * Refresh the action look-up table.
+     *
+     * This is done in case any actions are overwritten with new controllers.
+     *
+     * @return void
+     */
+    public function refreshActionLookups()
+    {
+        //
+    }
+
+    /**
+     * Find the first listen matching a given request.
+     *
+     * @param  \LaraGram\Listening\Contracts\ProvidesListenContext  $request
+     * @return \LaraGram\Listening\Listen
+     *
+     * @throws \Exception
+     */
+    public function match(ProvidesListenContext $request)
+    {
+        return $this->rehydrated()->match($request);
+    }
+
+    /**
+     * Find overlap-flagged listens that should run alongside the primary.
+     *
+     * @param  \LaraGram\Request\Request  $request
+     * @param  \LaraGram\Listening\Listen  $primary
+     * @return \LaraGram\Listening\Listen[]
+     */
+    public function matchOverlap(Request $request, Listen $primary)
+    {
+        return $this->rehydrated()->matchOverlap($request, $primary);
+    }
+
+    /**
+     * Build (once) a real ListenCollection from the cached attributes plus any
+     * listens added dynamically after the cache was loaded.
+     *
+     * Matching is delegated to this collection so cached and uncached dispatch
+     * behave identically – the cache only saves the cost of parsing the listen
+     * definition files, not the matching semantics (field/verb/tag/overlap).
+     *
+     * @return \LaraGram\Listening\ListenCollection
+     */
+    protected function rehydrated()
+    {
+        if ($this->rehydrated !== null) {
+            return $this->rehydrated;
+        }
+
+        $collection = new ListenCollection();
+
+        foreach ($this->attributes as $attributes) {
+            $collection->add($this->newListen($attributes));
+        }
+
+        foreach ($this->listens->getListens() as $listen) {
+            $collection->add($listen);
+        }
+
+        return $this->rehydrated = $collection;
+    }
+
+    /**
+     * Get listens from the collection by method.
+     *
+     * @param  string|null  $method
+     * @return \LaraGram\Listening\Listen[]
+     */
+    public function get($method = null)
+    {
+        return $this->getListensByMethod()[$method] ?? [];
+    }
+
+    /**
+     * Determine if the listen collection contains a given named listen.
+     *
+     * @param  string  $name
+     * @return bool
+     */
+    public function hasNamedListen($name)
+    {
+        return isset($this->attributes[$name]) || $this->listens->hasNamedListen($name);
+    }
+
+    /**
+     * Get a listen instance by its name.
+     *
+     * @param  string  $name
+     * @return \LaraGram\Listening\Listen|null
+     */
+    public function getByName($name)
+    {
+        $currentConnection = Request::getDefaultConnection();
+
+        if ($currentConnection !== null) {
+            $connectionKey = $name . '@' . $currentConnection;
+
+            if (isset($this->attributes[$connectionKey])) {
+                return $this->newListen($this->attributes[$connectionKey]);
+            }
+        }
+
+        if (isset($this->attributes[$name])) {
+            return $this->newListen($this->attributes[$name]);
+        }
+
+        return $this->listens->getByName($name);
+    }
+
+    /**
+     * Get a listen instance by its controller action.
+     *
+     * @param  string  $action
+     * @return \LaraGram\Listening\Listen|null
+     */
+    public function getByAction($action)
+    {
+        $attributes = (new Collection($this->attributes))->first(function (array $attributes) use ($action) {
+            if (isset($attributes['action']['controller'])) {
+                return trim($attributes['action']['controller'], '\\') === $action;
+            }
+
+            return $attributes['action']['uses'] === $action;
+        });
+
+        if ($attributes) {
+            return $this->newListen($attributes);
+        }
+
+        return $this->listens->getByAction($action);
+    }
+
+    /**
+     * Get all of the listens in the collection.
+     *
+     * @return \LaraGram\Listening\Listen[]
+     */
+    public function getListens()
+    {
+        return (new Collection($this->attributes))
+            ->map(function (array $attributes) {
+                return $this->newListen($attributes);
+            })
+            ->merge($this->listens->getListens())
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Get all of the listens keyed by their HTTP verb / method.
+     *
+     * @return array
+     */
+    public function getListensByMethod()
+    {
+        return (new Collection($this->getListens()))
+            ->groupBy(function (Listen $listen) {
+                return $listen->methods();
+            })
+            ->map(function (Collection $listens) {
+                return $listens->mapWithKeys(function (Listen $listen) {
+                    return [$listen->pattern => $listen];
+                })->all();
+            })
+            ->all();
+    }
+
+    /**
+     * Get all of the listens keyed by their name.
+     *
+     * @return \LaraGram\Listening\Listen[]
+     */
+    public function getListensByName()
+    {
+        return (new Collection($this->getListens()))
+            ->keyBy(function (Listen $listen) {
+                return $listen->getName();
+            })
+            ->all();
+    }
+
+    /**
+     * Resolve an array of attributes to a Listen instance.
+     *
+     * @param  array  $attributes
+     * @return \LaraGram\Listening\Listen
+     */
+    protected function newListen(array $attributes)
+    {
+        if (empty($attributes['action']['prefix'] ?? '')) {
+            $baseUri = $attributes['pattern'];
+        } else {
+            $prefix = $attributes['action']['prefix'];
+
+            $baseUri = ($prefix ?? '').$attributes['pattern'];
+        }
+
+        $listen = $this->listener->newListen($attributes['methods'], $baseUri, $attributes['action'])
+            ->setFallback($attributes['fallback'])
+            ->setStepName($attributes['stepName'] ?? null)
+            ->setDefaults($attributes['defaults'])
+            ->setWheres($attributes['wheres'])
+            ->setBindingFields($attributes['bindingFields'])
+            ->connection($attributes['action']['connection'])
+            ->block($attributes['lockSeconds'] ?? null, $attributes['waitSeconds'] ?? null)
+            ->withTrashed($attributes['withTrashed'] ?? false);
+
+        if (! empty($attributes['overlap'])) {
+            $listen->overlap($attributes['overlapGroups'] ?? []);
+        }
+
+        return $listen;
+    }
+
+    /**
+     * Set the listener instance on the listen.
+     *
+     * @param  \LaraGram\Listening\Listener  $listener
+     * @return $this
+     */
+    public function setListener(Listener $listener)
+    {
+        $this->listener = $listener;
+
+        return $this;
+    }
+
+    /**
+     * Set the container instance on the listen.
+     *
+     * @param  \LaraGram\Container\Container  $container
+     * @return $this
+     */
+    public function setContainer(Container $container)
+    {
+        $this->container = $container;
+
+        return $this;
+    }
+}
