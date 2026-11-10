@@ -443,14 +443,24 @@ trait HandlerTrait
         return $this->scopedContainerText('edited_message', $pattern, $action);
     }
 
-    public function onChannelPostCaption(string $pattern, Closure|array|string $action)
+    public function onChannelPostText(string $pattern, Closure|array|string $action)
     {
         return $this->scopedContainerText('channel_post', $pattern, $action);
     }
 
-    public function onEditedChannelPostCaption(string $pattern, Closure|array|string $action)
+    public function onEditedChannelPostText(string $pattern, Closure|array|string $action)
     {
         return $this->scopedContainerText('edited_channel_post', $pattern, $action);
+    }
+
+    public function onChannelPostCaption(string $pattern, Closure|array|string $action)
+    {
+        return $this->onChannelPostText($pattern, $action);
+    }
+
+    public function onEditedChannelPostCaption(string $pattern, Closure|array|string $action)
+    {
+        return $this->onEditedChannelPostText($pattern, $action);
     }
 
     protected function scopedContainer(string $container, Closure|array|string $action)
@@ -688,6 +698,37 @@ trait HandlerTrait
         return $this->addListen('MESSAGE', 'community_chat_removed', $action);
     }
 
+    public function onWidget(Closure|array|string $action)
+    {
+        return $this->addListen('MESSAGE', 'widget', $action);
+    }
+
+    public function onWidgetQuery(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'widget_query', $action);
+    }
+
+    public function onWidgetQueryType(string|array $type, Closure|array|string $action)
+    {
+        $type = is_array($type) ? implode('|', $type) : $type;
+        return $this->addListen(['UPDATE', 'WIDGET_QUERY_TYPE'], $type, $action);
+    }
+
+    public function onSharedWidgetQuery(Closure|array|string $action)
+    {
+        return $this->addListen('UPDATE', 'shared_widget_query', $action);
+    }
+
+    public function onTonWalletTransfer(Closure|array|string $action)
+    {
+        return $this->addListen('MESSAGE', 'ton_wallet_transfer', $action);
+    }
+
+    public function onPaidMessagesWaived(Closure|array|string $action)
+    {
+        return $this->addListen('MESSAGE', 'paid_messages_waived', $action);
+    }
+
     public function onEphemeralMessage(Closure|array|string $action)
     {
         $placeholder = 'e_' . substr(md5('ephemeral_message'), 0, 8);
@@ -712,6 +753,16 @@ trait HandlerTrait
     public function onPhoneNumber(Closure|array|string $action)
     {
         return $this->addListen(['TEXT', 'MESSAGE', 'ENTITIES'], 'phone_number', $action);
+    }
+
+    public function onBankCardNumber(Closure|array|string $action)
+    {
+        return $this->addListen(['TEXT', 'MESSAGE', 'ENTITIES'], 'bank_card_number', $action);
+    }
+
+    public function onTonAddress(Closure|array|string $action)
+    {
+        return $this->addListen(['TEXT', 'MESSAGE', 'ENTITIES'], 'ton_address', $action);
     }
 
     public function onTextLink(Closure|array|string $action)
