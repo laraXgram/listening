@@ -90,6 +90,22 @@ class PatternValidator implements ValidatorInterface
             return $type !== null && in_array($type, explode('|', $pattern), true);
         }
 
+        // Write access listeners by how the access was granted: invite (the
+        // bot owner invited the user), request, web_app or attachment_menu.
+        if (in_array('WRITE_ACCESS', $listenMethods, true)) {
+            $reason = $this->writeAccessReason(message()->write_access_allowed ?? null);
+
+            return $reason !== null && in_array($reason, explode('|', $pattern), true);
+        }
+
+        // Unique gift listeners by origin (upgrade, transfer, resale,
+        // gifted_upgrade, offer, ...).
+        if (in_array('GIFT_ORIGIN', $listenMethods, true)) {
+            $origin = message()->unique_gift->origin ?? null;
+
+            return $origin !== null && in_array($origin, explode('|', $pattern), true);
+        }
+
         // Ephemeral message listeners - match any message carrying an
         // ephemeral_message_id, independent of the content-derived verb.
         if (in_array('EPHEMERAL', $listenMethods, true)) {
@@ -275,15 +291,54 @@ class PatternValidator implements ValidatorInterface
             return false;
         }
 
-        $blocks = $rich->blocks ?? $rich->content ?? [];
+        return $this->containsRichBlock($rich->blocks ?? $rich->content ?? [], $pattern);
+    }
 
+    /**
+     * Determine if a list of rich blocks contains a block of the given type,
+     * looking into nested blocks (quotes, details, list items, ...) as well.
+     *
+     * @param  iterable  $blocks
+     * @param  string  $type
+     * @return bool
+     */
+    protected function containsRichBlock(iterable $blocks, string $type): bool
+    {
         foreach ($blocks as $block) {
-            if (($block->type ?? null) === $pattern) {
+            if (($block->type ?? null) === $type) {
                 return true;
+            }
+
+            if ($this->containsRichBlock($block->blocks ?? [], $type)) {
+                return true;
+            }
+
+            foreach ($block->items ?? [] as $item) {
+                if ($this->containsRichBlock($item->blocks ?? [], $type)) {
+                    return true;
+                }
             }
         }
 
         return false;
+    }
+
+    /**
+     * Get how the write access of a write_access_allowed message was granted.
+     *
+     * @param  object|null  $access
+     * @return string|null
+     */
+    protected function writeAccessReason(?object $access): ?string
+    {
+        return match (true) {
+            $access === null => null,
+            isset($access->inviter) => 'invite',
+            ! empty($access->from_request) => 'request',
+            isset($access->web_app_name) => 'web_app',
+            ! empty($access->from_attachment_menu) => 'attachment_menu',
+            default => null,
+        };
     }
 
     /**
